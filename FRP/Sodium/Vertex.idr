@@ -101,15 +101,15 @@ mutual
   registerSource : SourceRef -> VertexRef -> Reactive ()
   registerSource source target = do
     MkSource origin register registered _ <- readRef source
-    when (not registered) $
+    when (not registered) $ do
       modifyRef source (record {registered = True})
-    case register of
-      Just reg => do
-        dereg <- reg
-        modifyRef source (record {deregister = Just dereg})
-      Nothing => do
-        increment origin target
-        modifyRef source (record {deregister = Just $ decrement origin target})
+      case register of
+        Just reg => do
+          dereg <- reg
+          modifyRef source (record {deregister = Just dereg})
+        Nothing => do
+          increment origin target
+          modifyRef source (record {deregister = Just $ decrement origin target})
 
   deregisterSource : SourceRef -> VertexRef -> Reactive ()
   deregisterSource sourceRef targetRef = do
@@ -138,6 +138,11 @@ deregisterVertex : VertexRef -> VertexRef -> Reactive ()
 deregisterVertex vertex target = do
   decrement vertex target
   --TODO: collectCycles
+
+setSources : VertexRef -> List Source -> Reactive ()
+setSources vertex sources = do
+  sourcesRefs <- traverse newRef sources
+  modifyRef vertex (record{sources = sourcesRefs})
 
 Show Vertex where
     show (MkVertex name vertexID _ _ _ _ _) = "Vertex(" ++ name ++  ", " ++ show vertexID ++ ")"
