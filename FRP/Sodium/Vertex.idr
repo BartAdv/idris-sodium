@@ -11,11 +11,11 @@ VertexID = Integer
 Rank : Type
 Rank = Integer
 
-Register : Type
-Register = Reactive (Reactive ())
-
 Deregister : Type
 Deregister = Reactive ()
+
+Register : Type
+Register = Reactive Deregister
 
 mutual
   record Source where
@@ -138,3 +138,7 @@ deregisterVertex : VertexRef -> VertexRef -> Reactive ()
 deregisterVertex vertex target = do
   decrement vertex target
   --TODO: collectCycles
+
+Show Vertex where
+    show (MkVertex name vertexID _ _ _ _ _) = "Vertex(" ++ name ++  ", " ++ show vertexID ++ ")"
+

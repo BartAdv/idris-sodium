@@ -24,7 +24,8 @@ requestRegen : Reactive ()
 requestRegen = modify (record {toRegen = True})
 
 scheduleLast : Reactive () -> Reactive ()
-scheduleLast task = modify (record {final $= (++ [task])})
+scheduleLast task = do
+  modify (record {final $= (++ [task])})
 
 newRef : a -> Reactive (IORef a)
 newRef = lift . newIORef
@@ -43,3 +44,14 @@ uniqueID = do
   vID <- gets nextID
   modify (record{nextID = vID + 1})
   pure vID
+
+-- Allows to produce value that'll be stored to an IO ref
+-- while in the same time allowing to capture IORef itself.
+-- Note that it's not safe to read its value in callback.
+unsafeKnottedRef : (IORef a -> a) -> IORef a
+unsafeKnottedRef {a} cb = unsafePerformIO $ do
+  ref <- newIORef {a=a} $ believe_me ()
+  let v = cb ref
+  writeIORef ref v
+  pure ref
+
