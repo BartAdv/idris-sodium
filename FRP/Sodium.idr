@@ -33,6 +33,9 @@ record Event a where
   constructor MkEvent
   eventListened : IORef (GetEventListened a)
 
+mkEvent : (IORef (GetEventListened a) -> Reactive (EventListened a)) -> Event a
+mkEvent create = MkEvent $ unsafeKnottedRef (CreateEventListened . create)
+
 newEvent : Reactive (Event a)
 newEvent = do
   vertex <- newVertex "Event" 0 []
@@ -89,10 +92,9 @@ send_ (MkEventListened _ listeners firings) v = do
   traverse_ (\l => (handler l) v) !(readRef listeners)
 
 map : (a -> b) -> Event a -> Event b
-map f e = MkEvent $ unsafeKnottedRef create
+map f e = mkEvent create
   where
-    create : IORef (GetEventListened b) -> GetEventListened b
-    create outRef = CreateEventListened $ do
+    create outRef = do
       el <- getEventListened e
       outVertex <- newVertex "map" 0 []
       let cb = \v => send_ !(getEventListened_ outRef) (f v)
@@ -109,13 +111,25 @@ merge_ e1 e2 = MkEvent $ unsafeKnottedRef create
     create outRef = CreateEventListened $ do
       MkEventListened e1Vertex _ _ <- getEventListened e1
       MkEventListened e2Vertex _ _ <- getEventListened e2
-      outVertex <- newVertex "Merged event" 0 [] -- original was just default "Stream" name
-      leftVertex <- newVertex "merge" 0 []
+      outVertex   <- newVertex "Merged event" 0 [] -- original was just default "Stream" name
+      leftVertex  <- newVertex "merge" 0 []
       leftSources <- traverse newRef [newSource e1Vertex (listen_ e1 leftVertex (\v => send_ !(getEventListened_ outRef) v) False)]
-      outSources <- traverse  newRef [newSource leftVertex (do registerVertex leftVertex outVertex
+      outSources  <- traverse newRef [newSource leftVertex (do registerVertex leftVertex outVertex
                                                                pure $ deregisterVertex leftVertex outVertex),
                                       newSource e2Vertex (listen_ e2 outVertex (\v => send_ !(getEventListened_ outRef) v) False)]
       newEventListened outVertex
+
+filter : (a -> Bool) -> Event a -> Event a
+filter ff e = mkEvent create
+  where
+    create outRef = do
+      MkEventListened vertex _ _ <- getEventListened e
+      outVertex <- newVertex "filter" 0 []
+      let cb = \v => when (ff v) $ send_ !(getEventListened_ outRef) v
+      sources <- traverse newRef [newSource vertex (listen_ e outVertex cb False)]
+      newEventListened outVertex
+
+-- TODO: filter with Lambda1/deps
 
 export
 test : IO ()
@@ -123,14 +137,18 @@ test = do runStateT r ini
           pure ()
   where r : Reactive ()
         r = do
-          e <- newEvent {a=Integer}
-          let e' = map (+ 1) e
-          listen e' (lift . printLn)
+          ints <- newEvent {a=Integer}
+          let incs = map (+ 1) ints
+          listen incs (lift . printLn)
+          let evens = filter (\v => (v `mod` 2) == 0) incs
+          listen evens (lift . printLn)
           lift $ printLn "EVENTS"
-          printEventListened !(getEventListened e)
-          printEventListened !(getEventListened e')
+          printEventListened !(getEventListened ints)
+          printEventListened !(getEventListened incs)
+          printEventListened !(getEventListened evens)
           lift $ printLn "SEND"
-          send_ !(getEventListened e) 24
+          send_ !(getEventListened ints) 24
+          send_ !(getEventListened ints) 41
         ini = MkReactiveState False [] [] [] 0
 
 test2 : IO ()
