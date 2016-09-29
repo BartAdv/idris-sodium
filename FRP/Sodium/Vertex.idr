@@ -17,6 +17,9 @@ Deregister = Reactive ()
 Register : Type
 Register = Reactive Deregister
 
+noRegister : Register
+noRegister = pure $ pure ()
+
 mutual
   record Source where
     constructor MkSource
