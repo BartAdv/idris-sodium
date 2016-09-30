@@ -4,6 +4,8 @@ import Data.IORef
 import public FRP.Sodium.Reactive
 import FRP.Sodium.Vertex
 
+import Debug.Trace
+
 %access private
 
 record Listener a where
@@ -26,19 +28,16 @@ record Subscription a where
 newSubscription : VertexRef -> Reactive (Subscription a)
 newSubscription vertex = pure $ MkSubscription vertex !(newRef []) !(newRef [])
 
--- this helps to hide mutability
-data ReactiveSetup a = Create (Reactive a)
-                     | Cached a
-
-GetSubscription : Type -> Type
-GetSubscription a = ReactiveSetup (Subscription a)
+-- this helps to hide mutability in Events, still not sure about the name
+data GetSubscription a = Create (Reactive (Subscription a))
+                       | Cached (Subscription a)
 
 export
 record Event a where
   constructor MkEvent
   subscription : IORef (GetSubscription a)
 
-mkEvent : (IORef (GetSubscription a) -> Reactive (Subscription a)) -> Event a
+mkEvent : (IORef (GetSubscription a) -> (Reactive (Subscription a))) -> Event a
 mkEvent create = MkEvent $ unsafeKnottedRef (Create . create)
 
 printSubscription : Subscription a -> Reactive ()
@@ -54,6 +53,12 @@ getSubscription_ subscriptionRef = do
 
 getSubscription : Event a -> Reactive (Subscription a)
 getSubscription (MkEvent subscriptionRef) = getSubscription_ subscriptionRef
+
+-- delayed computation to obtain event' vertex
+getEventVertex : Event _ -> Reactive VertexRef
+getEventVertex e = do
+  es <- getSubscription e
+  pure $ vertex es
 
 export
 printEvent : Event a -> Reactive ()
@@ -82,6 +87,7 @@ send_ (MkSubscription _ listeners firings) v = do
   when (isNil !(readRef firings)) $ scheduleLast $
     modifyRef firings (const [])
   modifyRef firings (v::)
+  lift . printLn $ "send_ to " ++ (show $ length !(readRef listeners)) ++ " listeners"
   traverse_ (\l => (handler l) v) !(readRef listeners)
 
 %access export
@@ -105,37 +111,35 @@ map : (a -> b) -> Event a -> Event b
 map f e = mkEvent create
   where
     create outRef = do
-      el <- getSubscription e
       outVertex <- newVertex "map" 0 []
       let cb = \v => send_ !(getSubscription_ outRef) (f v)
-      setSources outVertex [newSource (vertex el) (listen_ e outVertex cb False)]
+      setSources outVertex [newSource (getEventVertex e) (listen_ e outVertex cb False)]
       newSubscription outVertex
 
 -- TODO: map with Lambda1/deps
 
-private
-merge_ : Event a -> Event a -> Event a
-merge_ e1 e2 = mkEvent create
-  where
-    create outRef = do
-      MkSubscription e1Vertex _ _ <- getSubscription e1
-      MkSubscription e2Vertex _ _ <- getSubscription e2
-      outVertex   <- newVertex "Merged event" 0 [] -- original was just default "Event" name
-      leftVertex  <- newVertex "merge" 0 []
-      leftSources <- traverse newRef [newSource e1Vertex (listen_ e1 leftVertex (\v => send_ !(getSubscription_ outRef) v) False)]
-      outSources  <- traverse newRef [newSource leftVertex (do registerVertex leftVertex outVertex
-                                                               pure $ deregisterVertex leftVertex outVertex),
-                                      newSource e2Vertex (listen_ e2 outVertex (\v => send_ !(getSubscription_ outRef) v) False)]
-      newSubscription outVertex
+-- private
+-- merge_ : Event a -> Event a -> Event a
+-- merge_ e1 e2 = mkEvent create
+--   where
+--     create outRef = do
+--       MkSubscription e1Vertex _ _ <- getSubscription e1
+--       MkSubscription e2Vertex _ _ <- getSubscription e2
+--       outVertex   <- newVertex "Merged event" 0 [] -- original was just default "Event" name
+--       leftVertex  <- newVertex "merge" 0 []
+--       leftSources <- traverse newRef [newSource e1Vertex (listen_ e1 leftVertex (\v => send_ !(getSubscription_ outRef) v) False)]
+--       outSources  <- traverse newRef [newSource leftVertex (do registerVertex leftVertex outVertex
+--                                                                pure $ deregisterVertex leftVertex outVertex),
+--                                       newSource e2Vertex (listen_ e2 outVertex (\v => send_ !(getSubscription_ outRef) v) False)]
+--       newSubscription outVertex
 
 filter : (a -> Bool) -> Event a -> Event a
 filter ff e = mkEvent create
   where
     create outRef = do
-      el <- getSubscription e
       outVertex <- newVertex "filter" 0 []
       let cb = \v => when (ff v) $ send_ !(getSubscription_ outRef) v
-      setSources outVertex [newSource (vertex el) (listen_ e outVertex cb False)]
+      setSources outVertex [newSource (getEventVertex e) (listen_ e outVertex cb False)]
       newSubscription outVertex
 
 -- TODO: filter with Lambda1/deps
@@ -156,40 +160,76 @@ record Sample a where
   vertex : VertexRef
   valueUpdate : Maybe a
 
-GetSample : Type -> Type
-GetSample a = ReactiveSetup (Sample a)
-
 export
 record Cell a where
   constructor MkCell
   event : Event a
-  sample : IORef (GetSample a)
+  sample : IORef (Sample a)
 
--- similar to mkEvent, don't know if it's needed at all
-mkCell : Event a -> (IORef (GetSample a) -> Reactive (Sample a)) -> Cell a
-mkCell e create = MkCell e $ unsafeKnottedRef (Create . create)
-
-getSample_ : IORef (GetSample a) -> Reactive (Sample a)
-getSample_ ref = do
-  Create create <- readRef ref | Cached el => pure el
-  el <- create
-  writeRef ref (Cached el)
-  pure el
+getSample_ : IORef (Sample a) -> Reactive (Sample a)
+getSample_ ref = readRef ref
 
 getSample : Cell a -> Reactive (Sample a)
 getSample (MkCell _ ref) = getSample_ ref
 
-newSample : a -> VertexRef -> Reactive (Sample a)
-newSample v vertex = pure $ MkSample v vertex Nothing
+-- delayed computation to obtain cell' vertex
+getCellVertex : Cell _ -> Reactive VertexRef
+getCellVertex c = do
+  es <- getSample c
+  pure $ vertex es
+
+updateSample_ : IORef (Sample a) -> (Sample a -> Sample a) -> Reactive ()
+updateSample_ = modifyRef
+
+newSample : a -> VertexRef -> Sample a
+newSample v vertex = MkSample v vertex Nothing
 
 %access export
 
-hold : Event a -> a -> Reactive (Cell a)
-hold e initValue = pure $
-  mkCell e $ \outRef => do
-    outVertex <- newVertex "Cell" 0 []
-    newSample initValue outVertex
-    -- TODO: setStream stuff
+hold : Lazy (Event a) -> a -> Reactive (Cell a)
+hold e v0 = do
+  outVertex <- newVertex "Cell" 0 []
+  outRef <- newRef $ newSample v0 outVertex
+  let cb = \v => do
+    lift $ printLn "Hold callback"
+    case (valueUpdate !(getSample_ outRef)) of
+      Just _ => pure ()
+      Nothing => scheduleLast $ updateSample_ outRef (record{value = v, valueUpdate = Nothing})
+    updateSample_ outRef (record{valueUpdate = Just v})
+  let e' = Force e -- to force it once
+  setSources outVertex [newSource (getEventVertex e') (listen_ e' outVertex cb False)]
+  nullV <- nullVertex
+  registerVertex outVertex nullV
+  scheduleLast $ deregisterVertex outVertex nullV
+  pure $ MkCell e outRef
+
+    -- protected setStream(str : Stream<A>) {
+    --     this.str = str;
+    --     const me = this,
+    --           src = new Source(
+    --             str.getVertex__(),
+    --             () => {
+    --                 return str.listen_(me.vertex, (a : A) => {
+    --                     if (me.valueUpdate == null) {
+    --                         currentTransaction.last(() => {
+    --                             me.value = me.valueUpdate;
+    --                             me.lazyInitValue = null;
+    --                             me.valueUpdate = null;
+    --                         });
+    --                     }
+    --                     me.valueUpdate = a;
+    --                 }, false);
+    --             }
+    --         );
+    --     this.vertex = new Vertex("Cell", 0, [src]);
+    --     // We do a trick here of registering the source for the duration of the current
+    --     // transaction so that we are guaranteed to catch any stream events that
+    --     // occur in the same transaction.
+    --     this.vertex.register(Vertex.NULL);
+    --     currentTransaction.last(() => {
+    --         this.vertex.deregister(Vertex.NULL);
+    --     });
+    -- }
 
 constCell : a -> Reactive (Cell a)
 constCell initValue = do
@@ -201,12 +241,11 @@ sample c = do
   s <- getSample c
   pure $ value s
 
-snapshot : Event a -> Cell b -> (a -> b -> c) -> Event c
-snapshot e c f =
+snapshot : Lazy (Event a) -> Lazy (Cell b) -> (a -> b -> c) -> Event c
+snapshot e c f = trace "snapshot" $
   mkEvent $ \outRef => do
     outVertex <- newVertex "snapshot" 0 []
     let cb = \v => send_ !(getSubscription_ outRef) (f v !(sample c))
-    setSources outVertex [newSource (vertex !(getSubscription e)) (listen_ e outVertex cb False),
-                          newSource (vertex !(getSample c)) noRegister]
+    setSources outVertex [newSource (getEventVertex e) (listen_ e outVertex cb False),
+                          newSource (getCellVertex c) noRegister]
     newSubscription outVertex
-

@@ -23,7 +23,7 @@ noRegister = pure $ pure ()
 mutual
   record Source where
     constructor MkSource
-    origin     : VertexRef
+    getOrigin  : Reactive VertexRef -- delayed Reactive action to allow value looping
     register   : Maybe Register
     registered : Bool
     deregister : Maybe Deregister
@@ -65,10 +65,12 @@ ensureBiggerThan vertexRef limit = do
 mutual
   incRefCount : VertexRef -> VertexRef -> Reactive Bool
   incRefCount vertex target = do
-    MkVertex _ _ rank sources _ children _ <- readRef vertex
+    lift $ printLn "incRefCount"
+    MkVertex _ _ rank sources _ _ _ <- readRef vertex
     when (!(refCount vertex) == 0) $
       traverse_ (\s => registerSource s vertex) sources
-    modifyRef vertex (record{children = vertex::children})
+    modifyRef vertex (record{targets $= (target::)})
+    modifyRef target (record{children $= (vertex::)})
     ensureBiggerThan target rank
     -- totalRegistrations++
 
@@ -103,14 +105,19 @@ mutual
 
   registerSource : SourceRef -> VertexRef -> Reactive ()
   registerSource source target = do
-    MkSource origin register registered _ <- readRef source
+    lift $ print "registerSource "
+    MkSource getOrigin register registered _ <- readRef source
+    lift $ printLn (show registered)
     when (not registered) $ do
       modifyRef source (record {registered = True})
       case register of
         Just reg => do
+          lift $ printLn "Registering source with reg"
           dereg <- reg
           modifyRef source (record {deregister = Just dereg})
         Nothing => do
+          lift $ printLn "Registering source with increment"
+          origin <- getOrigin
           increment origin target
           modifyRef source (record {deregister = Just $ decrement origin target})
 
@@ -125,14 +132,17 @@ mutual
 
 %access export
 
-newSource : VertexRef -> Register -> Source
-newSource vertex register = MkSource vertex (Just register) False Nothing
+newSource : Reactive VertexRef -> Register -> Source
+newSource getVertex register = MkSource getVertex (Just register) False Nothing
 
 newVertex : String -> Rank -> List SourceRef -> Reactive VertexRef
 newVertex name rank sources = do
   vID <- uniqueID
   let vertex = MkVertex name vID rank sources [] [] False
   newRef vertex
+
+nullVertex : Reactive VertexRef
+nullVertex = newVertex "user" 1000000000000 []
 
 registerVertex : VertexRef -> VertexRef -> Reactive Bool
 registerVertex = increment
