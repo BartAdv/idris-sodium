@@ -65,7 +65,6 @@ ensureBiggerThan vertexRef limit = do
 mutual
   incRefCount : VertexRef -> VertexRef -> Reactive Bool
   incRefCount vertex target = do
-    lift $ printLn "incRefCount"
     MkVertex _ _ rank sources _ _ _ <- readRef vertex
     when (!(refCount vertex) == 0) $
       traverse_ (\s => registerSource s vertex) sources
@@ -105,18 +104,14 @@ mutual
 
   registerSource : SourceRef -> VertexRef -> Reactive ()
   registerSource source target = do
-    lift $ print "registerSource "
     MkSource getOrigin register registered _ <- readRef source
-    lift $ printLn (show registered)
     when (not registered) $ do
       modifyRef source (record {registered = True})
       case register of
         Just reg => do
-          lift $ printLn "Registering source with reg"
           dereg <- reg
           modifyRef source (record {deregister = Just dereg})
         Nothing => do
-          lift $ printLn "Registering source with increment"
           origin <- getOrigin
           increment origin target
           modifyRef source (record {deregister = Just $ decrement origin target})

@@ -83,6 +83,8 @@ listen_ ev target h suppressEarlierFirings = do
 
 send_ : Subscription a -> a -> Reactive ()
 send_ (MkSubscription _ listeners firings) v = do
+  lift $ print $ "send_ "
+  lift $ printLn $ show $ believe_me {b=Integer} v
   -- TODO: vertex refCount check
   when (isNil !(readRef firings)) $ scheduleLast $
     modifyRef firings (const [])
@@ -157,51 +159,50 @@ ApplyState a b = (Maybe (a -> b), Maybe a)
 record Sample a where
   constructor MkSample
   value : a
-  vertex : VertexRef
   valueUpdate : Maybe a
 
 export
 record Cell a where
   constructor MkCell
   event : Event a
+  vertex : VertexRef
   sample : IORef (Sample a)
 
 getSample_ : IORef (Sample a) -> Reactive (Sample a)
 getSample_ ref = readRef ref
 
 getSample : Cell a -> Reactive (Sample a)
-getSample (MkCell _ ref) = getSample_ ref
-
--- delayed computation to obtain cell' vertex
-getCellVertex : Cell _ -> Reactive VertexRef
-getCellVertex c = do
-  es <- getSample c
-  pure $ vertex es
+getSample (MkCell ups vertex ref) = do
+  printEvent ups
+  lift . printLn $ "getSample " ++ show !(readRef vertex)
+  getSample_ ref
 
 updateSample_ : IORef (Sample a) -> (Sample a -> Sample a) -> Reactive ()
 updateSample_ = modifyRef
 
-newSample : a -> VertexRef -> Sample a
-newSample v vertex = MkSample v vertex Nothing
+newSample : a -> Sample a
+newSample v = MkSample v Nothing
 
 %access export
 
 hold : Lazy (Event a) -> a -> Reactive (Cell a)
 hold e v0 = do
   outVertex <- newVertex "Cell" 0 []
-  outRef <- newRef $ newSample v0 outVertex
+  outRef <- newRef $ newSample v0
   let cb = \v => do
-    lift $ printLn "Hold callback"
+    lift $ print $ "Hold callback "
+    lift $ printLn $ show $ believe_me {b=Integer} v
     case (valueUpdate !(getSample_ outRef)) of
       Just _ => pure ()
       Nothing => scheduleLast $ updateSample_ outRef (record{value = v, valueUpdate = Nothing})
-    updateSample_ outRef (record{valueUpdate = Just v})
+    -- TODO: no transactions yet
+    --updateSample_ outRef (record{valueUpdate = Just v})
   let e' = Force e -- to force it once
   setSources outVertex [newSource (getEventVertex e') (listen_ e' outVertex cb False)]
   nullV <- nullVertex
   registerVertex outVertex nullV
   scheduleLast $ deregisterVertex outVertex nullV
-  pure $ MkCell e outRef
+  pure $ MkCell e outVertex outRef
 
     -- protected setStream(str : Stream<A>) {
     --     this.str = str;
@@ -238,14 +239,17 @@ constCell initValue = do
 
 sample : Cell a -> Reactive a
 sample c = do
+  lift $ print "sample: "
   s <- getSample c
+  lift $ printLn $ show $ believe_me {b=Integer} (value s)
   pure $ value s
 
 snapshot : Lazy (Event a) -> Lazy (Cell b) -> (a -> b -> c) -> Event c
 snapshot e c f = trace "snapshot" $
   mkEvent $ \outRef => do
     outVertex <- newVertex "snapshot" 0 []
-    let cb = \v => send_ !(getSubscription_ outRef) (f v !(sample c))
+    let cb = \v => do lift $ printLn "snapshot cb"
+                      send_ !(getSubscription_ outRef) (f v !(sample c))
     setSources outVertex [newSource (getEventVertex e) (listen_ e outVertex cb False),
-                          newSource (getCellVertex c) noRegister]
+                          newSource (do lift $ printLn "getCellVertex"; pure $ vertex $ c) noRegister]
     newSubscription outVertex

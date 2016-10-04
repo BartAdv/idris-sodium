@@ -50,8 +50,16 @@ uniqueID = do
 -- Note that it's not safe to read its value in callback.
 unsafeKnottedRef : (IORef a -> a) -> IORef a
 unsafeKnottedRef {a} cb = unsafePerformIO $ do
-  ref <- newIORef {a=a} $ believe_me ()
+  ref <- newIORef {a} $ believe_me ()
   let v = cb ref
   writeIORef ref v
   pure ref
 
+loop : (Lazy a -> Reactive a) -> Reactive a
+loop f = do
+  ref <- newRef {a} $ believe_me ()
+  res <- f $ Delay $ (unsafePerformIO $ do printLn "reading looped ref"
+                                           readIORef ref)
+  lift $ printLn "writing looped ref"
+  writeRef ref res
+  pure res
